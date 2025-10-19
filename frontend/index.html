@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Emotion-Aware Health Monitoring</title>
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.4.0/dist/axios.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>  <!-- Try this CDN; fallback below -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background: linear-gradient(135deg, #1a1a2e, #16213e);
+      color: #e0e7ff;
+      font-family: 'Arial', sans-serif;
+    }
+    .neon-text {
+      text-shadow: 0 0 5px #0ff, 0 0 10px #0ff, 0 0 20px #f0f, 0 0 30px #f0f;
+    }
+    .neon-border {
+      box-shadow: 0 0 10px #0ff, 0 0 20px #f0f, inset 0 0 10px #0ff;
+    }
+    canvas, video {
+      border: 2px solid #0ff;
+      border-radius: 8px;
+      box-shadow: 0 0 15px #0ff, 0 0 25px #f0f;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4">
+  <h1 class="text-4xl font-bold neon-text mb-6">Emotion-Aware Health Monitoring</h1>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-6xl">
+    <div class="flex flex-col items-center">
+      <video id="video" width="640" height="480" autoplay muted class="neon-border"></video>
+      <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
+      <button id="manualTest" class="mt-2 bg-cyan-500 text-black px-4 py-2 rounded neon-text hover:bg-pink-500">Manual Test (Click for Instant Analysis)</button>
+    </div>
+    <div class="flex flex-col">
+      <canvas id="healthChart" width="640" height="480" class="neon-border"></canvas>
+    </div>
+  </div>
+  <div class="mt-6 w-full max-w-6xl">
+    <h2 class="text-2xl font-semibold neon-text">Health Insights</h2>
+    <div id="insights" class="mt-4 bg-gray-800 bg-opacity-50 p-4 rounded-lg neon-border">
+      <p><strong>Stress Level:</strong> <span id="stress">N/A</span></p>
+      <p><strong>HRV (ms):</strong> <span id="hrv">N/A</span></p>
+      <p><strong>Gait Status:</strong> <span id="gait">N/A</span></p>
+    </div>
+    <h2 class="text-2xl font-semibold neon-text mt-6">Recommendations</h2>
+    <ul id="recommendations" class="list-disc pl-5 mt-2 text-lg"></ul>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const chartCanvas = document.getElementById('healthChart');
+    const chartCtx = chartCanvas.getContext('2d');
+    const manualBtn = document.getElementById('manualTest');
+    let chart;  // Chart.js instance (if loaded)
+    let useChartJS = false;  // Toggle for fallback
+
+    console.log('=== DEBUG MODE: Frontend Starting ===');
+
+    // Check if Chart.js loaded
+    if (typeof Chart !== 'undefined') {
+      useChartJS = true;
+      console.log('Chart.js loaded—using full library.');
+    } else {
+      console.log('Chart.js not loaded—using canvas fallback.');
+      useChartJS = false;
+    }
+
+    // Initialize webcam
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => console.log('Webcam metadata loaded: Dimensions', video.videoWidth, 'x', video.videoHeight);
+        console.log('Webcam stream active.');
+      })
+      .catch(err => {
+        console.error('Webcam failed:', err.name, err.message);
+        alert('Webcam access failed: ' + err.message + '. Refresh and allow camera.');
+      });
+
+    // Store data for charts (max 10 points)
+    let stressData = [];
+    let hrvData = [];
+    let labels = [];
+
+    // Initialize Chart.js (if available)
+    function initChart() {
+      if (useChartJS && typeof Chart !== 'undefined') {
+        chart = new Chart(chartCtx, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: 'Stress Level',
+                data: stressData,
+                borderColor: '#0ff',
+                backgroundColor: 'rgba(0, 255, 255, 0.2)',
+                tension: 0.4,
+                pointBackgroundColor: '#f0f'
+              },
+              {
+                label: 'HRV (ms)',
+                data: hrvData,
+                borderColor: '#f0f',
+                backgroundColor: 'rgba(255, 0, 255, 0.2)',
+                tension: 0.4,
+                pointBackgroundColor: '#0ff'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: {
+              y: { beginAtZero: true, max: 100 },
+              x: { max: 10 }
+            },
+            plugins: {
+              legend: { labels: { color: '#e0e7ff' } }
+            }
+          }
+        });
+        console.log('Chart.js initialized.');
+        return true;
+      }
+      // Fallback: Clear canvas for native draw
+      chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+      chartCtx.fillStyle = '#1a1a2e';
+      chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
+      console.log('Canvas fallback ready.');
+      return false;
+    }
+
+    // Update chart function (Chart.js or fallback)
+    function updateChart() {
+      if (useChartJS && chart) {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = stressData;
+        chart.data.datasets[1].data = hrvData;
+        chart.update();
+        console.log('Chart.js updated.');
+        return;
+      }
+      // Fallback: Native canvas line draw
+      const width = chartCanvas.width;
+      const height = chartCanvas.height;
+      chartCtx.clearRect(0, 0, width, height);
+      chartCtx.fillStyle = '#1a1a2e';
+      chartCtx.fillRect(0, 0, width, height);
+
+      // Axes
+      chartCtx.strokeStyle = '#e0e7ff';
+      chartCtx.lineWidth = 1;
+      chartCtx.beginPath();
+      chartCtx.moveTo(50, height - 50);
+      chartCtx.lineTo(width - 50, height - 50);
+      chartCtx.lineTo(width - 50, 50);
+      chartCtx.stroke();
+
+      // Draw lines if data exists
+      if (stressData.length > 1) {
+        const stepX = (width - 100) / (stressData.length - 1);
+        const maxY = Math.max(...stressData, ...hrvData.map(v => v > 100 ? 100 : v));  // Cap at 100
+        const scaleY = (height - 100) / maxY;
+
+        // Stress (cyan)
+        chartCtx.strokeStyle = '#0ff';
+        chartCtx.lineWidth = 2;
+        chartCtx.beginPath();
+        stressData.forEach((val, i) => {
+          const x = 50 + i * stepX;
+          const y = height - 50 - val * scaleY;
+          if (i === 0) chartCtx.moveTo(x, y);
+          else chartCtx.lineTo(x, y);
+        });
+        chartCtx.stroke();
+
+        // HRV (magenta, cap >100)
+        chartCtx.strokeStyle = '#f0f';
+        chartCtx.lineWidth = 2;
+        chartCtx.beginPath();
+        hrvData.forEach((val, i) => {
+          const capped = val > 100 ? 100 : val;
+          const x = 50 + i * stepX;
+          const y = height - 50 - capped * scaleY;
+          if (i === 0) chartCtx.moveTo(x, y);
+          else chartCtx.lineTo(x, y);
+        });
+        chartCtx.stroke();
+      }
+
+      // Labels
+      chartCtx.fillStyle = '#0ff';
+      chartCtx.font = '12px Arial';
+      chartCtx.fillText('Stress', width - 100, height - 60);
+      chartCtx.fillStyle = '#f0f';
+      chartCtx.fillText('HRV', width - 100, height - 40);
+
+      console.log('Canvas fallback updated.');
+    }
+
+    // Poll backend for analysis
+    function analyzeFrame(isManual = false) {
+      console.log(`=== ${isManual ? 'MANUAL' : 'AUTO'} ANALYSIS START ===`);
+      if (!video.videoWidth || !video.videoHeight) {
+        console.warn('Video not ready—retry in 1s.');
+        setTimeout(() => analyzeFrame(isManual), 1000);
+        return;
+      }
+
+      // Capture frame
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = canvas.toDataURL('image/jpeg');
+      console.log('Frame captured: Length', imageData.length);
+
+      // Send to backend
+      console.log('Sending POST...');
+      axios.post('http://localhost:5000/analyze', { image: imageData })
+        .then(response => {
+          console.log('SUCCESS: Status', response.status, 'Keys:', Object.keys(response.data));
+          const data = response.data;
+          if (!data.emotions || !data.hrv || !data.gait) {
+            console.error('Invalid structure:', data);
+            return;
+          }
+
+          // Update insights
+          document.getElementById('stress').textContent = (data.emotions.stress * 100).toFixed(1) + '%';
+          document.getElementById('hrv').textContent = data.hrv.value.toFixed(1);
+          document.getElementById('gait').textContent = data.gait.anomaly ? 'Anomaly Detected' : 'Normal';
+
+          // Update recommendations
+          const recList = document.getElementById('recommendations');
+          recList.innerHTML = '';
+          data.recommendations.forEach(rec => {
+            const li = document.createElement('li');
+            li.textContent = rec;
+            li.className = 'text-cyan-300';
+            recList.appendChild(li);
+          });
+
+          // Update chart
+          stressData.push(data.emotions.stress * 100);
+          hrvData.push(data.hrv.value);
+          labels.push(new Date().toLocaleTimeString().slice(-8));  // Time only
+          if (stressData.length > 10) {
+            stressData.shift();
+            hrvData.shift();
+            labels.shift();
+          }
+          updateChart();
+
+          console.log('UI updated: Stress', data.emotions.stress, 'HRV', data.hrv.value, 'Gait', data.gait.anomaly, 'Recs', data.recommendations.length);
+        })
+        .catch(err => {
+          console.error('API FAILED. Status:', err.response?.status, 'Msg:', err.message);
+        })
+        .finally(() => console.log(`=== ANALYSIS END ===`));
+    }
+
+    // Manual button
+    manualBtn.addEventListener('click', () => analyzeFrame(true));
+
+    // Start
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log('DOM loaded.');
+      initChart();
+      setTimeout(() => {
+        console.log('Starting auto-polling.');
+        setInterval(() => analyzeFrame(false), 5000);
+        analyzeFrame(false);
+      }, 3000);
+    });
+  </script>
+</body>
+</html>
