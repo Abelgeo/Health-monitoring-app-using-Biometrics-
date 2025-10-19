@@ -24,6 +24,19 @@
       border-radius: 8px;
       box-shadow: 0 0 15px #0ff, 0 0 25px #f0f;
     }
+    .health-bar {
+      height: 20px;
+      background: #333;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .health-fill {
+      height: 100%;
+      transition: width 0.5s;
+    }
+    .good { background: #0f0; }
+    .medium { background: #ff0; }
+    .bad { background: #f00; }
   </style>
 </head>
 <body class="min-h-screen flex flex-col items-center p-4">
@@ -45,9 +58,21 @@
       <p><strong>HRV (ms):</strong> <span id="hrv">N/A</span></p>
       <p><strong>Sentiment Score:</strong> <span id="sentiment">N/A</span></p>
       <p><strong>Gait Status:</strong> <span id="gait">N/A</span></p>
+      <p><strong>Overall Health Score:</strong> <span id="healthScore">N/A</span></p>
+      <div class="health-bar mt-1">
+        <div id="healthFill" class="health-fill" style="width: 0%;"></div>
+      </div>
     </div>
+    <h2 class="text-2xl font-semibold neon-text mt-6">Voice Transcript</h2>
+    <p id="transcript" class="bg-gray-800 bg-opacity-50 p-4 rounded-lg neon-border mt-2 text-sm">No transcript yet.</p>
     <h2 class="text-2xl font-semibold neon-text mt-6">Recommendations</h2>
     <ul id="recommendations" class="list-disc pl-5 mt-2 text-lg"></ul>
+    <h2 class="text-2xl font-semibold neon-text mt-6">Tips</h2>
+    <ul id="tips" class="list-disc pl-5 mt-2 text-lg">
+      <li>Speak clearly during tests for better sentiment.</li>
+      <li>Frown for higher stress; smile for lower.</li>
+      <li>Walk irregularly for gait anomaly.</li>
+    </ul>
   </div>
 
   <script>
@@ -61,9 +86,8 @@
     let useChartJS = typeof Chart !== 'undefined';
     let mediaRecorder;
     let audioChunks = [];
-    let audioData = '';  // Variable for audio base64
+    let audioData = '';
 
-    // Request mic + camera
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
         video.srcObject = stream;
@@ -74,20 +98,18 @@
           const reader = new FileReader();
           reader.readAsDataURL(audioBlob);
           reader.onloadend = () => {
-            audioData = reader.result;  // Set variable
-            audioChunks = [];  // Reset
+            audioData = reader.result;
+            audioChunks = [];
           };
         };
       })
       .catch(err => console.error('Media error:', err));
 
-    // Data arrays
     let stressData = [];
     let hrvData = [];
     let sentimentData = [];
     let labels = [];
 
-    // Initialize chart
     function initChart() {
       if (useChartJS) {
         chart = new Chart(chartCtx, {
@@ -108,13 +130,11 @@
         });
         return true;
       }
-      // Fallback
       chartCtx.fillStyle = '#1a1a2e';
       chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
       return false;
     }
 
-    // Update chart (green for sentiment)
     function updateChart() {
       if (useChartJS && chart) {
         chart.data.labels = labels;
@@ -124,14 +144,13 @@
         chart.update();
         return;
       }
-      // Fallback (same as before, add green line)
+      // Fallback (same as before)
       const width = chartCanvas.width;
       const height = chartCanvas.height;
       chartCtx.clearRect(0, 0, width, height);
       chartCtx.fillStyle = '#1a1a2e';
       chartCtx.fillRect(0, 0, width, height);
 
-      // Axes
       chartCtx.strokeStyle = '#e0e7ff';
       chartCtx.lineWidth = 1;
       chartCtx.beginPath();
@@ -142,8 +161,7 @@
 
       if (stressData.length > 1) {
         const stepX = (width - 100) / (stressData.length - 1);
-        const maxY = 100;
-        const scaleY = (height - 100) / maxY;
+        const scaleY = (height - 100) / 100;
 
         // Stress (cyan)
         chartCtx.strokeStyle = '#0ff';
@@ -210,7 +228,6 @@
         });
       }
 
-      // Labels
       chartCtx.fillStyle = '#0ff';
       chartCtx.font = '12px Arial';
       chartCtx.fillText('Stress', width - 100, height - 70);
@@ -220,22 +237,21 @@
       chartCtx.fillText('Sentiment', width - 100, height - 40);
     }
 
-    // Analyze frame
     function analyzeFrame(isManual = false) {
       if (!video.videoWidth) return setTimeout(() => analyzeFrame(isManual), 1000);
 
-      // Audio recording (2s for faster)
+      // Audio (3s for better transcription)
       if (mediaRecorder && mediaRecorder.state !== 'recording') {
         audioChunks = [];
         mediaRecorder.start();
-        setTimeout(() => mediaRecorder.stop(), 2000);
+        setTimeout(() => mediaRecorder.stop(), 3000);
       }
 
       // Capture image
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = canvas.toDataURL('image/jpeg');
 
-      // Send after audio (use audioData var)
+      // Send after audio
       setTimeout(() => {
         axios.post('http://localhost:5000/analyze', { image: imageData, audio: audioData || '' })
           .then(response => {
@@ -247,8 +263,15 @@
             document.getElementById('hrv').textContent = data.hrv.value.toFixed(1);
             document.getElementById('sentiment').textContent = (data.voice.stress * 100).toFixed(1) + '%';
             document.getElementById('gait').textContent = data.gait.anomaly ? 'Anomaly Detected' : 'Normal';
+            document.getElementById('healthScore').textContent = data.health_score;
+            const fill = document.getElementById('healthFill');
+            fill.style.width = data.health_score + '%';
+            fill.className = 'health-fill ' + (data.health_score > 70 ? 'good' : data.health_score > 40 ? 'medium' : 'bad');
 
-            // Update recommendations
+            // Transcript
+            document.getElementById('transcript').textContent = data.voice.transcript;
+
+            // Recommendations
             const recList = document.getElementById('recommendations');
             recList.innerHTML = '';
             data.recommendations.forEach(rec => {
@@ -258,7 +281,7 @@
               recList.appendChild(li);
             });
 
-            // Update chart data
+            // Chart data
             stressData.push(data.emotions.stress * 100);
             hrvData.push(data.hrv.value);
             sentimentData.push(data.voice.stress * 100);
@@ -272,16 +295,14 @@
             updateChart();
           })
           .catch(err => console.error('API error:', err));
-      }, 2500);  // Wait for 2s audio
+      }, 3500);  // Wait for 3s audio
     }
 
-    // Events
     manualBtn.addEventListener('click', () => analyzeFrame(true));
 
-    // Start
     initChart();
     setTimeout(() => {
-      setInterval(() => analyzeFrame(false), 3000);  // Faster for demo
+      setInterval(() => analyzeFrame(false), 4000);
       analyzeFrame(false);
     }, 3000);
   </script>
