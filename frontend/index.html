@@ -37,6 +37,19 @@
     .good { background: #0f0; }
     .medium { background: #ff0; }
     .bad { background: #f00; }
+    .recording-indicator {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      background: #f00;
+      border-radius: 50%;
+      margin-left: 8px;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
   </style>
 </head>
 <body class="min-h-screen flex flex-col items-center p-4">
@@ -45,7 +58,10 @@
     <div class="flex flex-col items-center">
       <video id="video" width="640" height="480" autoplay muted class="neon-border"></video>
       <canvas id="canvas" width="640" height="480" class="hidden"></canvas>
-      <button id="manualTest" class="mt-2 bg-cyan-500 text-black px-4 py-2 rounded neon-text hover:bg-pink-500">Manual Test</button>
+      <button id="manualTest" class="mt-2 bg-cyan-500 text-black px-4 py-2 rounded neon-text hover:bg-pink-500">
+        Manual Test (Voice + Image)<span id="recordingDot"></span>
+      </button>
+      <p id="recordingStatus" class="text-sm text-yellow-300 mt-2"></p>
     </div>
     <div class="flex flex-col">
       <canvas id="healthChart" width="640" height="400" class="neon-border"></canvas>
@@ -69,9 +85,10 @@
     <ul id="recommendations" class="list-disc pl-5 mt-2 text-lg"></ul>
     <h2 class="text-2xl font-semibold neon-text mt-6">Tips</h2>
     <ul id="tips" class="list-disc pl-5 mt-2 text-lg">
-      <li>Speak clearly during tests for better sentiment.</li>
+      <li>Click "Manual Test" to record voice (3 seconds) + capture image.</li>
+      <li>Speak clearly for better sentiment analysis.</li>
       <li>Frown for higher stress; smile for lower.</li>
-      <li>Walk irregularly for gait anomaly.</li>
+      <li>Walk irregularly in front of camera for gait anomaly detection.</li>
     </ul>
   </div>
 
@@ -82,28 +99,46 @@
     const chartCanvas = document.getElementById('healthChart');
     const chartCtx = chartCanvas.getContext('2d');
     const manualBtn = document.getElementById('manualTest');
+    const recordingStatus = document.getElementById('recordingStatus');
+    const recordingDot = document.getElementById('recordingDot');
     let chart;
     let useChartJS = typeof Chart !== 'undefined';
     let mediaRecorder;
     let audioChunks = [];
     let audioData = '';
+    let isRecording = false;
+    let mediaStream;
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    // Request mic + camera
+    navigator.mediaDevices.getUserMedia({ video: true, audio: { echoCancellation: true, noiseSuppression: true } })
       .then(stream => {
         video.srcObject = stream;
-        mediaRecorder = new MediaRecorder(stream);
+        mediaStream = stream;
+        
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/wav',
+          audioBitsPerSecond: 128000
+        });
+        
         mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+        
         mediaRecorder.onstop = () => {
-          const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const reader = new FileReader();
-          reader.readAsDataURL(audioBlob);
-          reader.onloadend = () => {
+          reader.onload = () => {
             audioData = reader.result;
-            audioChunks = [];
+            isRecording = false;
+            recordingDot.innerHTML = '';
+            recordingStatus.textContent = 'Audio recorded! Processing...';
           };
+          reader.onerror = () => {
+            recordingStatus.textContent = 'Error reading audio';
+          };
+          reader.readAsDataURL(audioBlob);
+          audioChunks = [];
         };
       })
-      .catch(err => console.error('Media error:', err));
+      .catch(err => recordingStatus.textContent = 'Microphone/Camera access denied');
 
     let stressData = [];
     let hrvData = [];
@@ -144,13 +179,14 @@
         chart.update();
         return;
       }
-      // Fallback (same as before)
+      // Fallback draw
       const width = chartCanvas.width;
       const height = chartCanvas.height;
       chartCtx.clearRect(0, 0, width, height);
       chartCtx.fillStyle = '#1a1a2e';
       chartCtx.fillRect(0, 0, width, height);
 
+      // Axes (always draw)
       chartCtx.strokeStyle = '#e0e7ff';
       chartCtx.lineWidth = 1;
       chartCtx.beginPath();
@@ -226,85 +262,147 @@
           chartCtx.fillStyle = '#00f';
           chartCtx.fill();
         });
+      } else {
+        // Empty state text
+        chartCtx.fillStyle = '#e0e7ff';
+        chartCtx.font = '16px Arial';
+        chartCtx.textAlign = 'center';
+        chartCtx.fillText('No data yet—wait for analysis', width / 2, height / 2);
       }
 
+      // Labels (always)
       chartCtx.fillStyle = '#0ff';
       chartCtx.font = '12px Arial';
+      chartCtx.textAlign = 'left';
       chartCtx.fillText('Stress', width - 100, height - 70);
       chartCtx.fillStyle = '#f0f';
       chartCtx.fillText('HRV', width - 100, height - 55);
       chartCtx.fillStyle = '#0f0';
       chartCtx.fillText('Sentiment', width - 100, height - 40);
+      chartCtx.textAlign = 'left';
+    }
+
+    function sendAnalysisRequest(imageData, audio) {
+      console.log("Sending request with audio length:", audio ? audio.length : 0);
+      
+      axios.post('http://localhost:5000/analyze', { 
+        image: imageData, 
+        audio: audio || '' 
+      })
+        .then(response => {
+          const data = response.data;
+          console.log("Response:", data);
+          
+          if (!data.emotions || !data.hrv || !data.gait || !data.voice) {
+            console.error("Missing data fields in response");
+            return;
+          }
+
+          // Update insights
+          document.getElementById('stress').textContent = (data.emotions.stress * 100).toFixed(1) + '%';
+          document.getElementById('hrv').textContent = data.hrv.value.toFixed(1);
+          document.getElementById('sentiment').textContent = (data.voice.stress * 100).toFixed(1) + '%';
+          document.getElementById('gait').textContent = data.gait.anomaly ? 'Anomaly Detected' : 'Normal';
+          document.getElementById('healthScore').textContent = data.health_score;
+          
+          const fill = document.getElementById('healthFill');
+          fill.style.width = data.health_score + '%';
+          fill.className = 'health-fill ' + (data.health_score > 70 ? 'good' : data.health_score > 40 ? 'medium' : 'bad');
+
+          // Transcript
+          document.getElementById('transcript').textContent = data.voice.transcript || 'No transcript';
+
+          // Recommendations
+          const recList = document.getElementById('recommendations');
+          recList.innerHTML = '';
+          data.recommendations.forEach(rec => {
+            const li = document.createElement('li');
+            li.textContent = rec;
+            li.className = 'text-cyan-300';
+            recList.appendChild(li);
+          });
+
+          // Chart data
+          stressData.push(data.emotions.stress * 100);
+          hrvData.push(data.hrv.value);
+          sentimentData.push(data.voice.stress * 100);
+          labels.push(new Date().toLocaleTimeString().slice(-8));
+          if (stressData.length > 10) {
+            stressData.shift();
+            hrvData.shift();
+            sentimentData.shift();
+            labels.shift();
+          }
+          updateChart();  // Always call
+          
+          recordingStatus.textContent = 'Analysis complete!';
+        })
+        .catch(err => {
+          console.error('API error:', err);
+          recordingStatus.textContent = 'Error: ' + (err.response?.data?.error || err.message);
+        });
     }
 
     function analyzeFrame(isManual = false) {
-      if (!video.videoWidth) return setTimeout(() => analyzeFrame(isManual), 1000);
-
-      // Audio (3s for better transcription)
-      if (mediaRecorder && mediaRecorder.state !== 'recording') {
-        audioChunks = [];
-        mediaRecorder.start();
-        setTimeout(() => mediaRecorder.stop(), 3000);
+      if (!video.videoWidth) {
+        setTimeout(() => analyzeFrame(isManual), 1000);
+        return;
       }
 
       // Capture image
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = canvas.toDataURL('image/jpeg');
 
-      // Send after audio
-      setTimeout(() => {
-        axios.post('http://localhost:5000/analyze', { image: imageData, audio: audioData || '' })
-          .then(response => {
-            const data = response.data;
-            if (!data.emotions || !data.hrv || !data.gait || !data.voice) return;
-
-            // Update insights
-            document.getElementById('stress').textContent = (data.emotions.stress * 100).toFixed(1) + '%';
-            document.getElementById('hrv').textContent = data.hrv.value.toFixed(1);
-            document.getElementById('sentiment').textContent = (data.voice.stress * 100).toFixed(1) + '%';
-            document.getElementById('gait').textContent = data.gait.anomaly ? 'Anomaly Detected' : 'Normal';
-            document.getElementById('healthScore').textContent = data.health_score;
-            const fill = document.getElementById('healthFill');
-            fill.style.width = data.health_score + '%';
-            fill.className = 'health-fill ' + (data.health_score > 70 ? 'good' : data.health_score > 40 ? 'medium' : 'bad');
-
-            // Transcript
-            document.getElementById('transcript').textContent = data.voice.transcript;
-
-            // Recommendations
-            const recList = document.getElementById('recommendations');
-            recList.innerHTML = '';
-            data.recommendations.forEach(rec => {
-              const li = document.createElement('li');
-              li.textContent = rec;
-              li.className = 'text-cyan-300';
-              recList.appendChild(li);
-            });
-
-            // Chart data
-            stressData.push(data.emotions.stress * 100);
-            hrvData.push(data.hrv.value);
-            sentimentData.push(data.voice.stress * 100);
-            labels.push(new Date().toLocaleTimeString().slice(-8));
-            if (stressData.length > 10) {
-              stressData.shift();
-              hrvData.shift();
-              sentimentData.shift();
-              labels.shift();
+      if (isManual) {
+        // Start recording audio
+        if (mediaRecorder && mediaRecorder.state !== 'recording') {
+          audioChunks = [];
+          audioData = ''; // Reset
+          mediaRecorder.start();
+          isRecording = true;
+          recordingDot.innerHTML = '<span class="recording-indicator"></span>';
+          recordingStatus.textContent = 'Recording audio... (3 seconds)';
+          console.log("Recording started");
+          
+          // Stop after 3 seconds and send
+          setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+              console.log("Recording stopped, waiting for FileReader...");
+              
+              // Wait for FileReader to complete (with timeout)
+              const checkInterval = setInterval(() => {
+                if (!isRecording || audioData.length > 0) {
+                  clearInterval(checkInterval);
+                  console.log("Sending analysis with audio");
+                  sendAnalysisRequest(imageData, audioData);
+                }
+              }, 100);
+              
+              // Timeout after 2 seconds
+              setTimeout(() => {
+                clearInterval(checkInterval);
+                console.log("FileReader timeout, sending anyway");
+                sendAnalysisRequest(imageData, audioData);
+              }, 2000);
             }
-            updateChart();
-          })
-          .catch(err => console.error('API error:', err));
-      }, 3500);  // Wait for 3s audio
+          }, 3000);
+        }
+      } else {
+        // Auto mode (no audio)
+        sendAnalysisRequest(imageData, '');
+      }
     }
 
+    // Events
     manualBtn.addEventListener('click', () => analyzeFrame(true));
 
+    // Start (auto for image only)
     initChart();
     setTimeout(() => {
-      setInterval(() => analyzeFrame(false), 4000);
+      setInterval(() => analyzeFrame(false), 5000);
       analyzeFrame(false);
-    }, 3000);
+    }, 2000);
   </script>
 </body>
 </html>
